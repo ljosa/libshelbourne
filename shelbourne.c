@@ -90,6 +90,13 @@ static int read_file_int(const char *path)
     return atoi(buf);
 }
 
+/* Fire-and-forget shell command (process may not exist, etc.) */
+static void run_cmd(const char *cmd)
+{
+    int ret = system(cmd);
+    (void)ret;
+}
+
 /* ── Codec initialization ─────────────────────────────────────────── */
 
 static int codec_read_reg(const char *cmd, unsigned int *val)
@@ -256,7 +263,8 @@ static void clear_tx_running(void)
 
     if (lseek(fd, addr, SEEK_SET) >= 0) {
         uint32_t zero = 0;
-        write(fd, &zero, 4);
+        if (write(fd, &zero, 4) != 4)
+            fprintf(stderr, "shelbourne: failed to clear txRunning\n");
     }
 
     close(fd);
@@ -284,19 +292,25 @@ static void fix_keypad_timer(void)
     if (fd < 0) return;
 
     uint32_t gdev = 0;
-    if (lseek(fd, (off_t)(bss + 0x68), SEEK_SET) >= 0)
-        read(fd, &gdev, 4);
+    if (lseek(fd, (off_t)(bss + 0x68), SEEK_SET) < 0 ||
+        read(fd, &gdev, 4) != 4) {
+        close(fd);
+        return;
+    }
 
     if (gdev) {
         uint32_t timer_next = 0;
-        if (lseek(fd, (off_t)(gdev + 0x80), SEEK_SET) >= 0)
-            read(fd, &timer_next, 4);
+        if (lseek(fd, (off_t)(gdev + 0x80), SEEK_SET) < 0 ||
+            read(fd, &timer_next, 4) != 4) {
+            close(fd);
+            return;
+        }
 
         if (timer_next != 0) {
             uint32_t zero = 0;
-            lseek(fd, (off_t)(gdev + 0x80), SEEK_SET);
-            write(fd, &zero, 4);
-            fprintf(stderr, "shelbourne: fixed keypad timer (was 0x%08x)\n", timer_next);
+            if (lseek(fd, (off_t)(gdev + 0x80), SEEK_SET) >= 0 &&
+                write(fd, &zero, 4) == 4)
+                fprintf(stderr, "shelbourne: fixed keypad timer (was 0x%08x)\n", timer_next);
         }
     }
     close(fd);
@@ -320,7 +334,7 @@ static int process_running(const char *name)
     while ((ent = readdir(proc)) != NULL) {
         if (ent->d_name[0] < '1' || ent->d_name[0] > '9')
             continue;
-        char path[64];
+        char path[280];
         snprintf(path, sizeof(path), "/proc/%s/stat", ent->d_name);
         int fd = open(path, O_RDONLY);
         if (fd < 0) continue;
@@ -360,13 +374,13 @@ int shelbourne_stock_processes_active(void)
 void shelbourne_stop_stock_processes(void)
 {
     fprintf(stderr, "shelbourne: freezing process supervisor...\n");
-    system("kill -STOP $(pidof shepherdd) 2>/dev/null");
+    run_cmd("kill -STOP $(pidof shepherdd) 2>/dev/null");
 
     fprintf(stderr, "shelbourne: killing stock audio processes...\n");
     for (int i = 0; stock_procs[i]; i++) {
         char cmd[128];
         snprintf(cmd, sizeof(cmd), "killall -9 %s 2>/dev/null", stock_procs[i]);
-        system(cmd);
+        run_cmd(cmd);
     }
 
     sleep(1);
@@ -379,9 +393,9 @@ void shelbourne_resume_stock_processes(void)
      * trigger crash-recovery reboot (critical daemons like APServer and
      * BoseApp are configured with recovery="reboot").  SIGKILL is
      * delivered to stopped processes immediately. */
-    system("kill -9 $(pidof shepherdd) 2>/dev/null");
+    run_cmd("kill -9 $(pidof shepherdd) 2>/dev/null");
     sleep(2);
-    system("/etc/init.d/SoundTouch start 2>/dev/null");
+    run_cmd("/etc/init.d/SoundTouch start 2>/dev/null");
 }
 
 /* ── Audio DMA start ──────────────────────────────────────────────── */
@@ -396,13 +410,8 @@ static int start_tx_mode(shelbourne_t *hw)
         return -1;
     }
 
-    int sfd = open(SOURCE_SYSFS, O_WRONLY);
-    if (sfd >= 0) {
-        write(sfd, "tx", 2);
-        close(sfd);
-    } else {
-        fprintf(stderr, "shelbourne: cannot open %s: %s\n", SOURCE_SYSFS, strerror(errno));
-    }
+    if (write_file(SOURCE_SYSFS, "tx") < 0)
+        fprintf(stderr, "shelbourne: cannot write %s: %s\n", SOURCE_SYSFS, strerror(errno));
 
     usleep(100000);
     return 0;
@@ -473,7 +482,8 @@ void shelbourne_shutdown(shelbourne_t *hw)
     if (hw->fb_fd >= 0) {
         memset(hw->fb, 0, SHELBOURNE_FB_SIZE);
         lseek(hw->fb_fd, 0, SEEK_SET);
-        write(hw->fb_fd, hw->fb, SHELBOURNE_FB_SIZE);
+        if (write(hw->fb_fd, hw->fb, SHELBOURNE_FB_SIZE) < 0)
+            fprintf(stderr, "shelbourne: display clear failed\n");
     }
 
     /* LED off */
@@ -565,13 +575,10 @@ int shelbourne_aux_enable(shelbourne_t *hw)
     write_file(GPIO_MUTE, "0");
 
     /* Start AUX (RX) mode — TX stays running from init */
-    int sfd = open(SOURCE_SYSFS, O_WRONLY);
-    if (sfd < 0) {
+    if (write_file(SOURCE_SYSFS, "aux") < 0) {
         write_file(GPIO_MUTE, "1");
         return -1;
     }
-    write(sfd, "aux", 3);
-    close(sfd);
     usleep(200000);
 
     /* Open second fd for reading RX data */
@@ -629,20 +636,12 @@ int shelbourne_aux_disable(shelbourne_t *hw)
     }
 
     /* Stop RX */
-    int sfd = open(SOURCE_SYSFS, O_WRONLY);
-    if (sfd >= 0) {
-        write(sfd, "wifi", 4);
-        close(sfd);
-    }
+    write_file(SOURCE_SYSFS, "wifi");
     usleep(100000);
 
     /* Restart TX mode */
     clear_tx_running();
-    sfd = open(SOURCE_SYSFS, O_WRONLY);
-    if (sfd >= 0) {
-        write(sfd, "tx", 2);
-        close(sfd);
-    }
+    write_file(SOURCE_SYSFS, "tx");
     usleep(100000);
 
     write_file(GPIO_MUTE, "1");
@@ -679,7 +678,8 @@ void shelbourne_standby(shelbourne_t *hw)
         uint8_t black[SHELBOURNE_FB_SIZE];
         memset(black, 0, sizeof(black));
         lseek(hw->fb_fd, 0, SEEK_SET);
-        write(hw->fb_fd, black, sizeof(black));
+        if (write(hw->fb_fd, black, sizeof(black)) < 0)
+            fprintf(stderr, "shelbourne: display blank failed\n");
     }
 
     shelbourne_led_set(hw, SHELBOURNE_LED_OFF);
@@ -725,7 +725,8 @@ void shelbourne_display_flush(shelbourne_t *hw)
 {
     if (hw->fb_fd < 0) return;
     lseek(hw->fb_fd, 0, SEEK_SET);
-    write(hw->fb_fd, hw->fb, SHELBOURNE_FB_SIZE);
+    if (write(hw->fb_fd, hw->fb, SHELBOURNE_FB_SIZE) < 0)
+        fprintf(stderr, "shelbourne: display flush failed\n");
 }
 
 /* ── Keypad ───────────────────────────────────────────────────────── */
@@ -782,7 +783,8 @@ static void led_write(const char *dev, uint8_t val)
 {
     int fd = open(dev, O_WRONLY);
     if (fd < 0) return;
-    write(fd, &val, 1);
+    if (write(fd, &val, 1) != 1)
+        fprintf(stderr, "shelbourne: LED write failed: %s\n", dev);
     close(fd);
 }
 

@@ -1,7 +1,7 @@
 IMAGE  = shelbourne-build
 
 CC      = arm-linux-gnueabihf-gcc
-CFLAGS  = -static -O2 -Wall -Wextra
+CFLAGS  = -static -O2 -Wall -Wextra -Wpedantic
 
 .PHONY: all clean deploy docker
 

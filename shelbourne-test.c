@@ -466,7 +466,7 @@ int main(void)
 
         /* Freeze shepherdd and kill any player that may hold the audio device */
         shelbourne_stop_stock_processes();
-        system("killall -9 player 2>/dev/null");
+        { int ret = system("killall -9 player 2>/dev/null"); (void)ret; }
         sleep(1);
 
         if (run_hardware_tests("Hardware tests:") < 0) {

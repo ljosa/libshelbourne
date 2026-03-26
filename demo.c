@@ -255,7 +255,7 @@ static const struct {
 
 static void draw_tone_screen(uint8_t *fb, int preset, int volume)
 {
-    char hdr[16];
+    char hdr[32];
     snprintf(hdr, sizeof(hdr), "PRESET %d", preset + 1);
     center_text_2x(fb, 2, hdr, 0xFF);
 
