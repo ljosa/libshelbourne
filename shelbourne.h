@@ -15,7 +15,7 @@
  *   shelbourne_t *hw = shelbourne_init();
  *   if (!hw) exit(1);
  *
- *   // Play audio (32-bit stereo interleaved @ 48kHz)
+ *   // Play audio (32-bit stereo interleaved @ SHELBOURNE_SAMPLE_RATE)
  *   int gain = shelbourne_volume_to_gain(50);
  *   while (have_audio) {
  *       // ... decode, resample, apply gain to fill samples[] ...
@@ -72,8 +72,14 @@
 
 /* ── Constants ────────────────────────────────────────────────────── */
 
-/* Audio format (fixed by hardware) */
-#define SHELBOURNE_SAMPLE_RATE      48000
+/* Audio format (fixed by hardware).
+ *
+ * The codec runs at 46875 Hz, not 48000: the McASP fclk is 24 MHz and the
+ * driver clocks BCLK at 24 MHz / 8 = 3 MHz, giving a frame rate of
+ * 3 MHz / 64 BCLKs/frame = 46875 Hz. Treating it as 48000 Hz makes all
+ * audio play 0.41 semitones flat (440 Hz reads as 429.7 Hz on a tuner).
+ */
+#define SHELBOURNE_SAMPLE_RATE      46875
 #define SHELBOURNE_CHANNELS         2
 #define SHELBOURNE_BYTES_PER_SAMPLE 4
 #define SHELBOURNE_FRAME_SIZE       (SHELBOURNE_CHANNELS * SHELBOURNE_BYTES_PER_SAMPLE) /* 8 */
@@ -161,7 +167,7 @@ void shelbourne_shutdown(shelbourne_t *hw);
  * Buffer audio samples for DMA output (non-blocking).
  *
  * samples: interleaved 32-bit signed stereo (L, R, L, R, ...)
- *          at 48000 Hz. Full 32-bit range.
+ *          at SHELBOURNE_SAMPLE_RATE. Full 32-bit range.
  * frames:  number of stereo frames (each frame = 2 samples = 8 bytes).
  *          Any count is accepted — the library buffers internally.
  *
@@ -173,12 +179,13 @@ void shelbourne_shutdown(shelbourne_t *hw);
 int shelbourne_audio_write(shelbourne_t *hw, const int32_t *samples, int frames);
 
 /*
- * Flush buffered audio to DMA, blocking to pace at 48kHz.
+ * Flush buffered audio to DMA, blocking to pace at SHELBOURNE_SAMPLE_RATE.
  *
  * Writes all complete 512-frame chunks from the internal buffer to the
- * DMA device, sleeping between writes to maintain 48kHz playback rate.
- * One chunk = 10.667ms. Returns when the buffer has fewer than 512
- * frames remaining (i.e., the partial tail is kept for the next write).
+ * DMA device, sleeping between writes to maintain the hardware playback
+ * rate (46875 Hz, ~10.92ms per chunk). Returns when the buffer has fewer
+ * than 512 frames remaining (i.e., the partial tail is kept for the next
+ * write).
  *
  * Typical loop:
  *   shelbourne_audio_write(hw, samples, n);  // buffer

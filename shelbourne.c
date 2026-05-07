@@ -39,7 +39,7 @@
 
 /* ── Internal buffer size ─────────────────────────────────────────── */
 
-#define OUTBUF_FRAMES (SHELBOURNE_FRAMES_PER_WRITE * 32)  /* ~341ms at 48kHz */
+#define OUTBUF_FRAMES (SHELBOURNE_FRAMES_PER_WRITE * 32)  /* ~349ms at 46875Hz */
 
 /* ── Opaque struct ────────────────────────────────────────────────── */
 
@@ -535,7 +535,8 @@ int shelbourne_audio_wait(shelbourne_t *hw)
             clock_gettime(CLOCK_MONOTONIC, &hw->flush_next);
             hw->flush_started = 1;
         }
-        hw->flush_next.tv_nsec += 10666667;
+        hw->flush_next.tv_nsec +=
+            (1000000000L * SHELBOURNE_FRAMES_PER_WRITE) / SHELBOURNE_SAMPLE_RATE;
         if (hw->flush_next.tv_nsec >= 1000000000) {
             hw->flush_next.tv_nsec -= 1000000000;
             hw->flush_next.tv_sec++;
