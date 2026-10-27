@@ -535,8 +535,9 @@ int shelbourne_audio_wait(shelbourne_t *hw)
             clock_gettime(CLOCK_MONOTONIC, &hw->flush_next);
             hw->flush_started = 1;
         }
-        hw->flush_next.tv_nsec +=
-            (1000000000L * SHELBOURNE_FRAMES_PER_WRITE) / SHELBOURNE_SAMPLE_RATE;
+        /* 64-bit: 1e9 * 512 overflows a 32-bit long on ARM */
+        hw->flush_next.tv_nsec += (long)
+            ((1000000000LL * SHELBOURNE_FRAMES_PER_WRITE) / SHELBOURNE_SAMPLE_RATE);
         if (hw->flush_next.tv_nsec >= 1000000000) {
             hw->flush_next.tv_nsec -= 1000000000;
             hw->flush_next.tv_sec++;
