@@ -41,6 +41,10 @@
 
 #define OUTBUF_FRAMES (SHELBOURNE_FRAMES_PER_WRITE * 32)  /* ~349ms at 46875Hz */
 
+/* AUX noise gate threshold: peak of 32-bit input samples (about -78 dBFS).
+ * The unplugged input measures about -113 dBFS RMS. */
+#define AUX_GATE_THRESHOLD (1 << 18)
+
 /* ── Opaque struct ────────────────────────────────────────────────── */
 
 struct shelbourne {
@@ -54,6 +58,7 @@ struct shelbourne {
     /* AUX */
     int aux_active;
     int aux_read_fd;
+    long aux_quiet_frames;  /* consecutive input frames below the gate */
 
     /* Display */
     int fb_fd;
@@ -594,6 +599,7 @@ int shelbourne_aux_enable(shelbourne_t *hw)
 
     write_file(GPIO_MUTE, "1");
     hw->aux_active = 1;
+    hw->aux_quiet_frames = 0;
     shelbourne_audio_reset(hw);
     fprintf(stderr, "shelbourne: AUX enabled\n");
     return 0;
@@ -610,10 +616,28 @@ int shelbourne_aux_pump(shelbourne_t *hw, int gain)
         return -1;
     }
 
+    int32_t *samples = (int32_t *)raw;
+    int num_samples = n / (int)sizeof(int32_t);
+
+    /* Noise gate: with nothing plugged in, the input carries low-level
+     * noise.  Tiny non-zero samples make the output stage hiss audibly,
+     * while exact zeros keep it quiet, so after a second below the
+     * threshold, output zeros until real audio returns. */
+    int64_t peak = 0;
+    for (int i = 0; i < num_samples; i++) {
+        int64_t v = samples[i] < 0 ? -(int64_t)samples[i] : samples[i];
+        if (v > peak)
+            peak = v;
+    }
+    if (peak >= AUX_GATE_THRESHOLD)
+        hw->aux_quiet_frames = 0;
+    else if (hw->aux_quiet_frames < SHELBOURNE_SAMPLE_RATE)
+        hw->aux_quiet_frames += num_samples / 2;
+    if (hw->aux_quiet_frames >= SHELBOURNE_SAMPLE_RATE)
+        memset(raw, 0, n);
+
     /* Apply volume gain */
     if (gain != 65536 && gain >= 0) {
-        int32_t *samples = (int32_t *)raw;
-        int num_samples = n / (int)sizeof(int32_t);
         for (int i = 0; i < num_samples; i++)
             samples[i] = (int32_t)(((int64_t)samples[i] * gain) >> 16);
     }
